@@ -294,28 +294,31 @@ async function drive(dot: Dot, prevId: string | null, input: ResponseInputItem[]
 /** Stream one model response, mirroring text into the transcript as it arrives. */
 async function respond(dot: Dot, prevId: string | null, input: ResponseInputItem[], trigger: Trigger, signal: AbortSignal): Promise<Response> {
   const appModel = await modelFor(dot.model);
-  const { client, model, stateless } = clientFor(appModel);
+  const { client, model, stateless, webSearch, computer, truncation } = clientFor(appModel);
   const tools: Tool[] = [
     ...toolsForDot(dot).map((t): Tool => ({ type: "function", name: t.name, description: t.description, parameters: t.parameters, strict: !stateless && t.strict !== false })),
-    // OpenRouter's server-side search: the model decides when to search, same as OpenAI's web_search.
-    stateless ? ({ type: "openrouter:web_search" } as unknown as Tool) : { type: "web_search" },
+    // The provider's own search tool, where it has one: the model decides when to search, same as OpenAI's web_search.
+    ...(webSearch ? [{ type: webSearch } as unknown as Tool] : []),
   ];
-  if (!stateless && COMPUTER_ENABLED && supportsComputerTool(model)) tools.push({ type: "computer" } as Tool);
+  // The prompt advertises exactly the built-in tools this request carries, so a dot on a gateway model
+  // isn't told to click a screen it can't see.
+  const caps = { webSearch: Boolean(webSearch), computer: computer && COMPUTER_ENABLED && supportsComputerTool(model) };
+  if (caps.computer) tools.push({ type: "computer" } as Tool);
 
   // Stateless providers get the whole conversation every time; the app keeps it (trimmed) per chat.
   const history = stateless ? (repo.getHistory(dot.id) as ResponseInputItem[]) : [];
   repo.setActivity(dot.id, "Thinking");
   const stream = await client.responses.create(
     stateless
-      ? { model, instructions: systemPrompt(dot, trigger), input: [...history, ...input], tools, parallel_tool_calls: false, store: false, stream: true }
+      ? { model, instructions: systemPrompt(dot, trigger, caps), input: [...history, ...input], tools, parallel_tool_calls: false, store: false, stream: true }
       : {
           model,
-          instructions: systemPrompt(dot, trigger),
+          instructions: systemPrompt(dot, trigger, caps),
           input,
           previous_response_id: prevId ?? undefined,
           tools,
           ...(isReasoningModel(model) ? { reasoning: { effort: "medium" as const } } : {}),
-          truncation: "auto",
+          ...(truncation ? { truncation: "auto" as const } : {}),
           parallel_tool_calls: false,
           store: true,
           stream: true,
@@ -354,6 +357,12 @@ async function respond(dot: Dot, prevId: string | null, input: ResponseInputItem
           break;
         case "response.completed":
           final = ev.response;
+          break;
+        case "response.incomplete":
+          // An upstream ran out of output budget instead of finishing. Keep what streamed — the `finally`
+          // below saves it before we return — rather than throwing away a turn that mostly worked.
+          final = ev.response;
+          if (ev.response.incomplete_details?.reason === "max_output_tokens") activity(dot.id, "Hit its answer limit");
           break;
         case "response.failed":
           throw new Error(ev.response.error?.message ?? "The model request failed");
@@ -414,6 +423,10 @@ async function processCalls(dot: Dot, pending: Pending, signal: AbortSignal): Pr
 
     const def = findTool(call.name);
     const args = safeParse(call.arguments);
+    if (!args) {
+      pending.outputs.push({ type: "function_call_output", call_id: call.call_id, output: "That call was cut off before its arguments arrived. Ask again." });
+      continue;
+    }
     if (!def) {
       pending.outputs.push({ type: "function_call_output", call_id: call.call_id, output: `Unknown tool ${call.name}` });
       continue;
@@ -483,7 +496,7 @@ function pauseFor(dot: Dot, pending: Pending, card: CardData): true {
 
 async function execTool(dot: Dot, call: ResponseFunctionToolCall, signal: AbortSignal): Promise<string> {
   const def = findTool(call.name)!;
-  const args = safeParse(call.arguments);
+  const args = safeParse(call.arguments) ?? {};
   repo.setActivity(dot.id, def.label);
   activity(dot.id, def.label, summarize(args));
   try {
@@ -540,13 +553,14 @@ setConsult(async (target, message, from, _depth, signal) => {
   if (!channelId) repo.addMessage({ dotId: target.id, role: "user", text: message, from: `dot:${from.name}` });
   repo.setActivity(target.id, `Helping ${from.name}`);
   try {
-    const { client, model, stateless } = clientFor(await modelFor(target.model));
+    const { client, model, stateless, webSearch } = clientFor(await modelFor(target.model));
     const res = await client.responses.create(
       {
         model,
-        instructions: systemPrompt(target, { kind: "dot", from: from.name }),
+        // A consult carries the search tool only, so it must not promise a computer either.
+        instructions: systemPrompt(target, { kind: "dot", from: from.name }, { webSearch: Boolean(webSearch), computer: false }),
         input: [...rebuildContext(target.id, message).slice(-12), { role: "user", content: `${from.name} asks: ${message}` }],
-        tools: [stateless ? ({ type: "openrouter:web_search" } as unknown as Tool) : { type: "web_search" }],
+        tools: webSearch ? [{ type: webSearch } as unknown as Tool] : [],
         ...(stateless ? { store: false } : isReasoningModel(model) ? { reasoning: { effort: "low" as const } } : {}),
       },
       { signal },
@@ -598,11 +612,13 @@ function parsePending(raw: string | null): Pending | null {
   return raw ? (JSON.parse(raw) as Pending) : null;
 }
 
-function safeParse(raw: string): Record<string, unknown> {
+/** A call's arguments, or null when they aren't valid JSON — a stream cut mid-call leaves them half
+ * written, and running the tool on an empty object would be worse than not running it. */
+function safeParse(raw: string): Record<string, unknown> | null {
   try {
     return JSON.parse(raw || "{}");
   } catch {
-    return {};
+    return null;
   }
 }
 

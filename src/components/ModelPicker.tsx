@@ -4,16 +4,29 @@ import { useState } from "react";
 import { Check, ChevronDown, Cpu } from "lucide-react";
 import { useStore } from "@/lib/store";
 
-const OPEN = "openrouter:";
-const label = (id: string) => (id.startsWith(OPEN) ? id.slice(OPEN.length) : id);
+// The gateway providers, in the order their models arrive in the list. Ids carry the prefix; the picker shows the bare id.
+const GATEWAYS = [
+  { prefix: "openrouter:", group: "Open models", hint: "Open model · OpenRouter" },
+  { prefix: "anyrouter:", group: "AnyRouter", hint: "Any model · AnyRouter" },
+];
+const gatewayOf = (id: string) => GATEWAYS.find((g) => id.startsWith(g.prefix));
+const label = (id: string) => id.slice(gatewayOf(id)?.prefix.length ?? 0);
 
 function hint(id: string): string | null {
-  if (id.startsWith(OPEN)) return "Open model · OpenRouter";
+  const g = gatewayOf(id);
+  if (g) return g.hint;
   if (/-pro\b/.test(id)) return "Strongest · slower";
   if (/-nano\b/.test(id)) return "Fastest · cheapest";
   if (/-mini\b/.test(id)) return "Fast · cheaper";
   if (/codex/.test(id)) return "Coding";
   return null;
+}
+
+/** The heading above a model, so each provider's block is labelled once and the list reads in order. */
+function groupOf(id: string, list: string[], i: number): string | undefined {
+  const mine = gatewayOf(id)?.group;
+  if (mine) return list.slice(0, i).some((m) => gatewayOf(m)?.group === mine) ? undefined : mine;
+  return i === 0 && list.some((m) => gatewayOf(m)) ? "OpenAI" : undefined;
 }
 
 /**
@@ -42,8 +55,7 @@ export default function ModelPicker({
       id,
       label: label(id),
       sub: hint(id),
-      // a heading above the first open model (and above OpenAI's when both are there)
-      group: id.startsWith(OPEN) && !list[i - 1]?.startsWith(OPEN) ? "Open models" : i === 0 && list.some((m) => m.startsWith(OPEN)) ? "OpenAI" : undefined,
+      group: groupOf(id, list, i),
     })),
   ];
 

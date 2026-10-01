@@ -3,6 +3,7 @@ import OpenAI from "openai";
 import { getSetting, setSetting } from "../db";
 import { seal, unseal } from "../vault";
 import { isOpenRouterModel, openModels, openRouterId, openRouterKey, openrouter, preferredOpenModel, smallOpenModel } from "./openrouter";
+import { ANYROUTER_PICKER_MAX, anyRouterId, anyRouterKey, anyRouterModels, anyrouter, isAnyRouterModel, preferredAnyModel, smallAnyModel } from "./anyrouter";
 
 // Models are chosen from what the API key can actually use. Precedence for a dot's model:
 // the dot's own choice → the default picked in Settings → DOTS_MODEL → best available.
@@ -94,19 +95,26 @@ async function resolveOpenAI(): Promise<{ main: string; review: string; availabl
   };
 }
 
-/** OpenAI models (with an OpenAI key) first, then open models (with an OpenRouter key). */
+/** OpenAI models (with an OpenAI key) first, then open models (with an OpenRouter key), then AnyRouter's catalog. */
 async function resolve() {
-  const [oa, open] = await Promise.all([
+  const [oa, open, any] = await Promise.all([
     resolveOpenAI(),
     openModels().catch((err) => {
       console.warn("[dots] couldn't list OpenRouter models:", err instanceof Error ? err.message : err);
       return [] as string[];
     }),
+    anyRouterModels().catch((err) => {
+      console.warn("[dots] couldn't list AnyRouter models:", err instanceof Error ? err.message : err);
+      return [] as string[];
+    }),
   ]);
+  // DOTS_MODEL outranks a provider's own preference, as the precedence note above promises and as
+  // OpenAI's branch already does — but only when the user can actually run it. An OpenRouter-only user
+  // with DOTS_MODEL=gpt-5.5 would otherwise be handed a model they have no key for, on every turn.
   const resolved = {
-    main: oa?.main ?? (open.length ? preferredOpenModel(open) : process.env.DOTS_MODEL || MAIN_PREFERENCE[0]),
-    review: oa?.review ?? (open.length ? smallOpenModel(open) : process.env.DOTS_REVIEW_MODEL || REVIEW_PREFERENCE[0]),
-    available: [...(oa?.available ?? []), ...open],
+    main: oa?.main ?? runnable(process.env.DOTS_MODEL, open.length ? preferredOpenModel(open) : anyRouterKey() ? preferredAnyModel(any) : MAIN_PREFERENCE[0]),
+    review: oa?.review ?? runnable(process.env.DOTS_REVIEW_MODEL, open.length ? smallOpenModel(open) : anyRouterKey() ? smallAnyModel(any) : REVIEW_PREFERENCE[0]),
+    available: [...(oa?.available ?? []), ...open, ...any.slice(0, ANYROUTER_PICKER_MAX)],
   };
   g.__dotsResolved = resolved;
   console.log(`[dots] default ${resolved.main} (agent), ${resolved.review} (rule review); ${resolved.available.length} models available`);
@@ -119,14 +127,36 @@ export function resetModels() {
   g.__dotsResolved = undefined;
 }
 
-/** The API client for a model, the model id that API expects, and whether it keeps conversation state. */
-export function clientFor(model: string): { client: OpenAI; model: string; stateless: boolean } {
-  return isOpenRouterModel(model) ? { client: openrouter(), model: openRouterId(model), stateless: true } : { client: openai(), model, stateless: false };
+/** Whether this model can actually be run with the keys on hand: a gateway id needs that gateway's key. */
+function runnable(model: string | undefined, fallback: string): string {
+  if (!model) return fallback;
+  if (isOpenRouterModel(model)) return openRouterKey() ? model : fallback;
+  if (isAnyRouterModel(model)) return anyRouterKey() ? model : fallback;
+  return hasKey() ? model : fallback;
 }
 
-/** True when any model provider is set up (OpenAI or OpenRouter). */
+/** How one provider's API differs from OpenAI's: which built-in tools it serves, which request fields it takes, and whether it keeps conversation state. */
+type Provider = {
+  client: OpenAI; // the SDK pointed at that provider's base URL
+  model: string; // the id that API expects (any app prefix stripped)
+  stateless: boolean; // no conversation state, so the app replays each chat's history itself
+  webSearch: string | null; // its built-in search tool, or null when it has none
+  computer: boolean; // it serves OpenAI's computer tool
+  truncation: boolean; // it accepts OpenAI's `truncation` request field. Gateways pass the field to
+  // their upstreams, which reject it as unsupported, and AnyRouter turns that rejection into a 502
+  // for the whole turn — so it is OpenAI-only.
+};
+
+/** The API client for a model and everything the runtime needs to know about how that provider differs. */
+export function clientFor(model: string): Provider {
+  if (isOpenRouterModel(model)) return { client: openrouter(), model: openRouterId(model), stateless: true, webSearch: "openrouter:web_search", computer: false, truncation: false };
+  if (isAnyRouterModel(model)) return { client: anyrouter(), model: anyRouterId(model), stateless: false, webSearch: null, computer: false, truncation: false };
+  return { client: openai(), model, stateless: false, webSearch: "web_search", computer: true, truncation: true };
+}
+
+/** True when any model provider is set up (OpenAI, OpenRouter or AnyRouter). */
 export function canThink(): boolean {
-  return hasKey() || Boolean(openRouterKey());
+  return hasKey() || Boolean(openRouterKey()) || Boolean(anyRouterKey());
 }
 
 export function models(): Promise<{ main: string; review: string; available: string[] }> {
@@ -149,9 +179,10 @@ export function knownModels(): { main: string; review: string; available: string
   return { ...r, defaultModel: getSetting("default_model") ?? r.main };
 }
 
-/** gpt-5.x / gpt-6 / o-series accept `reasoning`; gpt-4.1 and friends reject it. */
+/** gpt-5.x / gpt-6 / o-series accept `reasoning`; gpt-4.1 and friends reject it. Gateways don't —
+ * they pick the effort per route, and a level their upstream doesn't declare comes back rejected. */
 export function isReasoningModel(model: string): boolean {
-  return !isOpenRouterModel(model) && /^(gpt-[5-9]|o[1-9])/.test(model) && !/chat/.test(model);
+  return !isOpenRouterModel(model) && !isAnyRouterModel(model) && /^(gpt-[5-9]|o[1-9])/.test(model) && !/chat/.test(model);
 }
 
 /** OpenAI's GA computer tool needs a recent model; older ones get the page-reading tools only. */
