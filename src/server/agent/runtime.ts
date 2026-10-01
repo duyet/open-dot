@@ -294,7 +294,7 @@ async function drive(dot: Dot, prevId: string | null, input: ResponseInputItem[]
 /** Stream one model response, mirroring text into the transcript as it arrives. */
 async function respond(dot: Dot, prevId: string | null, input: ResponseInputItem[], trigger: Trigger, signal: AbortSignal): Promise<Response> {
   const appModel = await modelFor(dot.model);
-  const { client, model, stateless, webSearch, computer } = clientFor(appModel);
+  const { client, model, stateless, webSearch, computer, truncation } = clientFor(appModel);
   const tools: Tool[] = [
     ...toolsForDot(dot).map((t): Tool => ({ type: "function", name: t.name, description: t.description, parameters: t.parameters, strict: !stateless && t.strict !== false })),
     // The provider's own search tool, where it has one: the model decides when to search, same as OpenAI's web_search.
@@ -318,7 +318,7 @@ async function respond(dot: Dot, prevId: string | null, input: ResponseInputItem
           previous_response_id: prevId ?? undefined,
           tools,
           ...(isReasoningModel(model) ? { reasoning: { effort: "medium" as const } } : {}),
-          truncation: "auto",
+          ...(truncation ? { truncation: "auto" as const } : {}),
           parallel_tool_calls: false,
           store: true,
           stream: true,
@@ -357,6 +357,12 @@ async function respond(dot: Dot, prevId: string | null, input: ResponseInputItem
           break;
         case "response.completed":
           final = ev.response;
+          break;
+        case "response.incomplete":
+          // An upstream ran out of output budget instead of finishing. Keep what streamed — the `finally`
+          // below has already saved it — rather than throwing away a turn that mostly worked.
+          final = ev.response;
+          if (ev.response.incomplete_details?.reason === "max_output_tokens") activity(dot.id, "Hit its answer limit");
           break;
         case "response.failed":
           throw new Error(ev.response.error?.message ?? "The model request failed");

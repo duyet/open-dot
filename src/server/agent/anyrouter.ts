@@ -20,13 +20,19 @@ const HEADERS = {
   "X-AnyRouter-Title": "Open Dot",
   "X-AnyRouter-Source": "desktop",
 };
-// The catalog also lists pseudo-models that only make sense inside the dashboard.
-const SKIP = [/^anyrouter\/byok$/];
+// Routers that only work inside a workspace the user hasn't set up here.
+const SKIP = [/^anyrouter\/decision$/];
 // Best first when a model has to be picked for the user (no OpenAI key yet, or no choice made).
-const MAIN_PREFERENCE = [/^anyrouter\/auto/, /^z-ai\/glm-5(\.\d)?$/, /^moonshotai\/kimi-k\d/, /^deepseek\/deepseek-v\d/, /^nvidia\/nemotron-3-ultra/];
-const SMALL_PREFERENCE = [/^z-ai\/glm-.*-flash$/, /^deepseek\/.*-flash/, /^nvidia\/nemotron-3\.5-lightning/, /^google\/gemma-4/];
+// Anchored at the end so a "-flash" variant can't win the main slot over the full model.
+const MAIN_PREFERENCE = [/^anyrouter\/auto/, /^z-ai\/glm-5(\.\d+)?$/, /^moonshotai\/kimi-k\d/, /^nvidia\/nemotron-3-ultra/, /^deepseek\/deepseek-v\d(\.\d+)?$/];
+// The cheap tier, for the rule checker and chat titles. Anchored so the newest, priciest model can't win.
+const SMALL_PREFERENCE = [/^z-ai\/glm-.*-flash$/, /^nvidia\/nemotron-3\.5-lightning/, /^deepseek\/.*-flash/, /^google\/gemma-4/, /^anyrouter\/free$/];
 
-const g = globalThis as unknown as { __dotsAnyRouter?: { key: string; client: OpenAI }; __dotsAnyModels?: { at: number; ids: string[] } };
+const g = globalThis as unknown as {
+  __dotsAnyRouter?: { key: string; client: OpenAI };
+  __dotsAnyModels?: { at: number; ids: string[] };
+  __dotsAllAnyModels?: string[];
+};
 
 function envKey(): string | null {
   return process.env.ANYROUTER_API_KEY || null;
@@ -84,15 +90,22 @@ export async function anyRouterModels(): Promise<string[]> {
   const res = await fetch(`${BASE_URL}/models?capability=function-calling`, { headers: { Authorization: `Bearer ${anyRouterKey()}` } });
   if (!res.ok) throw new Error(`AnyRouter models: ${res.status}`);
   const { data } = (await res.json()) as { data: { id: string; created?: number }[] };
-  const ids = data
-    .filter((m) => !SKIP.some((re) => re.test(m.id)))
-    .sort((a, b) => (b.created ?? 0) - (a.created ?? 0))
-    .slice(0, 40)
-    .map((m) => ANYROUTER_PREFIX + m.id);
+  const all = data.filter((m) => !SKIP.some((re) => re.test(m.id))).sort((a, b) => (b.created ?? 0) - (a.created ?? 0)).map((m) => ANYROUTER_PREFIX + m.id);
+  g.__dotsAllAnyModels = all;
+  // The picker shows the newest 40; the defaults below are picked from all of them.
+  const ids = all.slice(0, 40);
   g.__dotsAnyModels = { at: Date.now(), ids };
   return ids;
 }
 
-const pick = (ids: string[], prefs: RegExp[]) => prefs.map((re) => ids.find((id) => re.test(anyRouterId(id)))).find(Boolean) ?? ids[0];
-export const preferredAnyModel = (ids: string[]) => pick(ids, MAIN_PREFERENCE);
-export const smallAnyModel = (ids: string[]) => pick(ids, SMALL_PREFERENCE);
+// Widen the picker's 40 back to the whole catalog, but only when handed exactly that slice — a caller
+// with a list of its own (a test, a future caller) must get its own answer.
+const uncapped = (ids: string[]) => (g.__dotsAnyModels?.ids === ids && g.__dotsAllAnyModels?.length ? g.__dotsAllAnyModels : ids);
+// Preference first, then the oldest entry as the fallback: ids arrive newest-first, so ids[0] would
+// hand the rule checker the newest — and dearest — model whenever the catalog holds nothing we know.
+const pick = (ids: string[], prefs: RegExp[]) => prefs.map((re) => ids.find((id) => re.test(anyRouterId(id)))).find(Boolean) ?? ids[ids.length - 1];
+
+/** The default agent model, and the default for rule review and chat titles. Both read past the
+ * picker's cap, so a preferred model with an older `created` can't be hidden by the slice. */
+export const preferredAnyModel = (ids: string[]) => pick(uncapped(ids), MAIN_PREFERENCE);
+export const smallAnyModel = (ids: string[]) => pick(uncapped(ids), SMALL_PREFERENCE);

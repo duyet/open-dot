@@ -108,9 +108,11 @@ async function resolve() {
       return [] as string[];
     }),
   ]);
+  // DOTS_MODEL outranks a provider's own preference, as the precedence note above promises and as
+  // OpenAI's branch already does; the gateways used to be consulted first and silently won.
   const resolved = {
-    main: oa?.main ?? (open.length ? preferredOpenModel(open) : any.length ? preferredAnyModel(any) : process.env.DOTS_MODEL || MAIN_PREFERENCE[0]),
-    review: oa?.review ?? (open.length ? smallOpenModel(open) : any.length ? smallAnyModel(any) : process.env.DOTS_REVIEW_MODEL || REVIEW_PREFERENCE[0]),
+    main: oa?.main ?? (process.env.DOTS_MODEL || (open.length ? preferredOpenModel(open) : any.length ? preferredAnyModel(any) : MAIN_PREFERENCE[0])),
+    review: oa?.review ?? (process.env.DOTS_REVIEW_MODEL || (open.length ? smallOpenModel(open) : any.length ? smallAnyModel(any) : REVIEW_PREFERENCE[0])),
     available: [...(oa?.available ?? []), ...open, ...any],
   };
   g.__dotsResolved = resolved;
@@ -124,20 +126,23 @@ export function resetModels() {
   g.__dotsResolved = undefined;
 }
 
-/** How one provider's API differs from OpenAI's: which built-in tools it serves and whether it keeps conversation state. */
+/** How one provider's API differs from OpenAI's: which built-in tools it serves, which request fields it takes, and whether it keeps conversation state. */
 export type Provider = {
   client: OpenAI; // the SDK pointed at that provider's base URL
   model: string; // the id that API expects (any app prefix stripped)
   stateless: boolean; // no conversation state, so the app replays each chat's history itself
   webSearch: string | null; // its built-in search tool, or null when it has none
   computer: boolean; // it serves OpenAI's computer tool
+  truncation: boolean; // it accepts OpenAI's `truncation` request field. Gateways pass the field to
+  // their upstreams, which reject it as unsupported, and AnyRouter turns that rejection into a 502
+  // for the whole turn — so it is OpenAI-only.
 };
 
 /** The API client for a model and everything the runtime needs to know about how that provider differs. */
 export function clientFor(model: string): Provider {
-  if (isOpenRouterModel(model)) return { client: openrouter(), model: openRouterId(model), stateless: true, webSearch: "openrouter:web_search", computer: false };
-  if (isAnyRouterModel(model)) return { client: anyrouter(), model: anyRouterId(model), stateless: false, webSearch: null, computer: false };
-  return { client: openai(), model, stateless: false, webSearch: "web_search", computer: true };
+  if (isOpenRouterModel(model)) return { client: openrouter(), model: openRouterId(model), stateless: true, webSearch: "openrouter:web_search", computer: false, truncation: false };
+  if (isAnyRouterModel(model)) return { client: anyrouter(), model: anyRouterId(model), stateless: false, webSearch: null, computer: false, truncation: false };
+  return { client: openai(), model, stateless: false, webSearch: "web_search", computer: true, truncation: true };
 }
 
 /** True when any model provider is set up (OpenAI, OpenRouter or AnyRouter). */
@@ -165,9 +170,10 @@ export function knownModels(): { main: string; review: string; available: string
   return { ...r, defaultModel: getSetting("default_model") ?? r.main };
 }
 
-/** gpt-5.x / gpt-6 / o-series accept `reasoning`; gpt-4.1 and friends reject it. */
+/** gpt-5.x / gpt-6 / o-series accept `reasoning`; gpt-4.1 and friends reject it. Gateways don't —
+ * they pick the effort per route, and a level their upstream doesn't declare comes back rejected. */
 export function isReasoningModel(model: string): boolean {
-  return !isOpenRouterModel(model) && /^(gpt-[5-9]|o[1-9])/.test(model) && !/chat/.test(model);
+  return !isOpenRouterModel(model) && !isAnyRouterModel(model) && /^(gpt-[5-9]|o[1-9])/.test(model) && !/chat/.test(model);
 }
 
 /** OpenAI's GA computer tool needs a recent model; older ones get the page-reading tools only. */
