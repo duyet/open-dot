@@ -15,7 +15,6 @@ const decisionText = { allow: "do it without asking", ask: "ask first (request_a
 
 // `caps` says which built-in tools the model running this turn actually gets, so the prompt never
 // promises one the request doesn't carry. OpenRouter and AnyRouter serve neither of OpenAI's.
-
 export type Caps = { webSearch: boolean; computer: boolean };
 
 export function systemPrompt(dot: Dot, trigger: Trigger, caps: Caps): string {

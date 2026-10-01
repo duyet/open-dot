@@ -12,6 +12,10 @@ import { seal, unseal } from "../vault";
 export const ANYROUTER_PREFIX = "anyrouter:";
 const BASE_URL = "https://anyrouter.dev/api/v1";
 const KEY_SETTING = "anyrouter_key";
+/** How many models the picker offers. The defaults below are picked from the whole catalog. */
+export const ANYROUTER_PICKER_MAX = 40;
+// AnyRouter's own router: a fixed id that resolves to whatever this key can reach.
+const ROUTER = ANYROUTER_PREFIX + "anyrouter/auto";
 // A response id that can't exist, used to check a key without spending anything.
 const KEY_PROBE = "resp_open_dot_key_check";
 // Attribution headers AnyRouter uses to credit the app in its dashboard and public rankings.
@@ -20,7 +24,7 @@ const HEADERS = {
   "X-AnyRouter-Title": "Open Dot",
   "X-AnyRouter-Source": "desktop",
 };
-// Routers that only work inside a workspace the user hasn't set up here.
+// A router that only works across a workspace's own keys, which a plain API key has none of.
 const SKIP = [/^anyrouter\/decision$/];
 // Best first when a model has to be picked for the user (no OpenAI key yet, or no choice made).
 // AnyRouter's own routers lead because they resolve to whatever this particular key can actually
@@ -30,11 +34,7 @@ const MAIN_PREFERENCE = [/^anyrouter\/auto$/, /^moonshotai\/kimi-k\d/, /^nvidia\
 // The rule checker and chat titles are short calls, so they take the same reliable route first.
 const SMALL_PREFERENCE = [/^anyrouter\/auto$/, /^anyrouter\/free$/, /^nvidia\/nemotron-3\.5-lightning/, /^anyrouter\/coding$/];
 
-const g = globalThis as unknown as {
-  __dotsAnyRouter?: { key: string; client: OpenAI };
-  __dotsAnyModels?: { at: number; ids: string[] };
-  __dotsAllAnyModels?: string[];
-};
+const g = globalThis as unknown as { __dotsAnyRouter?: { key: string; client: OpenAI }; __dotsAnyModels?: { at: number; ids: string[] } };
 
 function envKey(): string | null {
   return process.env.ANYROUTER_API_KEY || null;
@@ -85,29 +85,25 @@ export async function saveAnyRouterKey(key: string): Promise<string | null> {
 }
 
 // The catalog files vision models under "multimodal", so filter on the ability to call tools and nothing else.
-/** Models this key can call as tools, newest first, as app model ids. Cached for an hour. */
+/** Every model this key can call as tools, newest first, as app model ids. Cached for an hour. */
 export async function anyRouterModels(): Promise<string[]> {
   if (!anyRouterKey()) return [];
   if (g.__dotsAnyModels && Date.now() - g.__dotsAnyModels.at < 3_600_000) return g.__dotsAnyModels.ids;
   const res = await fetch(`${BASE_URL}/models?capability=function-calling`, { headers: { Authorization: `Bearer ${anyRouterKey()}` } });
   if (!res.ok) throw new Error(`AnyRouter models: ${res.status}`);
   const { data } = (await res.json()) as { data: { id: string; created?: number }[] };
-  const all = data.filter((m) => !SKIP.some((re) => re.test(m.id))).sort((a, b) => (b.created ?? 0) - (a.created ?? 0)).map((m) => ANYROUTER_PREFIX + m.id);
-  g.__dotsAllAnyModels = all;
-  // The picker shows the newest 40; the defaults below are picked from all of them.
-  const ids = all.slice(0, 40);
+  const ids = data.filter((m) => !SKIP.some((re) => re.test(m.id))).sort((a, b) => (b.created ?? 0) - (a.created ?? 0)).map((m) => ANYROUTER_PREFIX + m.id);
   g.__dotsAnyModels = { at: Date.now(), ids };
   return ids;
 }
 
-// Widen the picker's 40 back to the whole catalog, but only when handed exactly that slice — a caller
-// with a list of its own (a test, a future caller) must get its own answer.
-const uncapped = (ids: string[]) => (g.__dotsAnyModels?.ids === ids && g.__dotsAllAnyModels?.length ? g.__dotsAllAnyModels : ids);
 // Preference first, then the oldest entry as the fallback: ids arrive newest-first, so ids[0] would
 // hand the rule checker the newest — and dearest — model whenever the catalog holds nothing we know.
-const pick = (ids: string[], prefs: RegExp[]) => prefs.map((re) => ids.find((id) => re.test(anyRouterId(id)))).find(Boolean) ?? ids[ids.length - 1];
+// With no list at all, fall back to AnyRouter's own router: a fixed id rather than a catalog entry,
+// so it still reaches something the key can use even when /models didn't answer.
+const pick = (ids: string[], prefs: RegExp[]) => prefs.map((re) => ids.find((id) => re.test(anyRouterId(id)))).find(Boolean) ?? ids[ids.length - 1] ?? ROUTER;
 
-/** The default agent model, and the default for rule review and chat titles. Both read past the
- * picker's cap, so a preferred model with an older `created` can't be hidden by the slice. */
-export const preferredAnyModel = (ids: string[]) => pick(uncapped(ids), MAIN_PREFERENCE);
-export const smallAnyModel = (ids: string[]) => pick(uncapped(ids), SMALL_PREFERENCE);
+/** The default agent model, and the default for rule review and chat titles. Both read the whole
+ * list rather than the slice the picker shows, so a preferred model can't hide behind that cap. */
+export const preferredAnyModel = (ids: string[]) => pick(ids, MAIN_PREFERENCE);
+export const smallAnyModel = (ids: string[]) => pick(ids, SMALL_PREFERENCE);

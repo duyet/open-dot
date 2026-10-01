@@ -3,7 +3,7 @@ import OpenAI from "openai";
 import { getSetting, setSetting } from "../db";
 import { seal, unseal } from "../vault";
 import { isOpenRouterModel, openModels, openRouterId, openRouterKey, openrouter, preferredOpenModel, smallOpenModel } from "./openrouter";
-import { anyRouterId, anyRouterKey, anyRouterModels, anyrouter, isAnyRouterModel, preferredAnyModel, smallAnyModel } from "./anyrouter";
+import { ANYROUTER_PICKER_MAX, anyRouterId, anyRouterKey, anyRouterModels, anyrouter, isAnyRouterModel, preferredAnyModel, smallAnyModel } from "./anyrouter";
 
 // Models are chosen from what the API key can actually use. Precedence for a dot's model:
 // the dot's own choice → the default picked in Settings → DOTS_MODEL → best available.
@@ -109,11 +109,12 @@ async function resolve() {
     }),
   ]);
   // DOTS_MODEL outranks a provider's own preference, as the precedence note above promises and as
-  // OpenAI's branch already does; the gateways used to be consulted first and silently won.
+  // OpenAI's branch already does — but only when the user can actually run it. An OpenRouter-only user
+  // with DOTS_MODEL=gpt-5.5 would otherwise be handed a model they have no key for, on every turn.
   const resolved = {
-    main: oa?.main ?? (process.env.DOTS_MODEL || (open.length ? preferredOpenModel(open) : any.length ? preferredAnyModel(any) : MAIN_PREFERENCE[0])),
-    review: oa?.review ?? (process.env.DOTS_REVIEW_MODEL || (open.length ? smallOpenModel(open) : any.length ? smallAnyModel(any) : REVIEW_PREFERENCE[0])),
-    available: [...(oa?.available ?? []), ...open, ...any],
+    main: oa?.main ?? runnable(process.env.DOTS_MODEL, open.length ? preferredOpenModel(open) : anyRouterKey() ? preferredAnyModel(any) : MAIN_PREFERENCE[0]),
+    review: oa?.review ?? runnable(process.env.DOTS_REVIEW_MODEL, open.length ? smallOpenModel(open) : anyRouterKey() ? smallAnyModel(any) : REVIEW_PREFERENCE[0]),
+    available: [...(oa?.available ?? []), ...open, ...any.slice(0, ANYROUTER_PICKER_MAX)],
   };
   g.__dotsResolved = resolved;
   console.log(`[dots] default ${resolved.main} (agent), ${resolved.review} (rule review); ${resolved.available.length} models available`);
@@ -126,8 +127,16 @@ export function resetModels() {
   g.__dotsResolved = undefined;
 }
 
+/** Whether this model can actually be run with the keys on hand: a gateway id needs that gateway's key. */
+function runnable(model: string | undefined, fallback: string): string {
+  if (!model) return fallback;
+  if (isOpenRouterModel(model)) return openRouterKey() ? model : fallback;
+  if (isAnyRouterModel(model)) return anyRouterKey() ? model : fallback;
+  return hasKey() ? model : fallback;
+}
+
 /** How one provider's API differs from OpenAI's: which built-in tools it serves, which request fields it takes, and whether it keeps conversation state. */
-export type Provider = {
+type Provider = {
   client: OpenAI; // the SDK pointed at that provider's base URL
   model: string; // the id that API expects (any app prefix stripped)
   stateless: boolean; // no conversation state, so the app replays each chat's history itself

@@ -360,7 +360,7 @@ async function respond(dot: Dot, prevId: string | null, input: ResponseInputItem
           break;
         case "response.incomplete":
           // An upstream ran out of output budget instead of finishing. Keep what streamed — the `finally`
-          // below has already saved it — rather than throwing away a turn that mostly worked.
+          // below saves it before we return — rather than throwing away a turn that mostly worked.
           final = ev.response;
           if (ev.response.incomplete_details?.reason === "max_output_tokens") activity(dot.id, "Hit its answer limit");
           break;
@@ -423,6 +423,10 @@ async function processCalls(dot: Dot, pending: Pending, signal: AbortSignal): Pr
 
     const def = findTool(call.name);
     const args = safeParse(call.arguments);
+    if (!args) {
+      pending.outputs.push({ type: "function_call_output", call_id: call.call_id, output: "That call was cut off before its arguments arrived. Ask again." });
+      continue;
+    }
     if (!def) {
       pending.outputs.push({ type: "function_call_output", call_id: call.call_id, output: `Unknown tool ${call.name}` });
       continue;
@@ -492,7 +496,7 @@ function pauseFor(dot: Dot, pending: Pending, card: CardData): true {
 
 async function execTool(dot: Dot, call: ResponseFunctionToolCall, signal: AbortSignal): Promise<string> {
   const def = findTool(call.name)!;
-  const args = safeParse(call.arguments);
+  const args = safeParse(call.arguments) ?? {};
   repo.setActivity(dot.id, def.label);
   activity(dot.id, def.label, summarize(args));
   try {
@@ -608,11 +612,13 @@ function parsePending(raw: string | null): Pending | null {
   return raw ? (JSON.parse(raw) as Pending) : null;
 }
 
-function safeParse(raw: string): Record<string, unknown> {
+/** A call's arguments, or null when they aren't valid JSON — a stream cut mid-call leaves them half
+ * written, and running the tool on an empty object would be worse than not running it. */
+function safeParse(raw: string): Record<string, unknown> | null {
   try {
     return JSON.parse(raw || "{}");
   } catch {
-    return {};
+    return null;
   }
 }
 
