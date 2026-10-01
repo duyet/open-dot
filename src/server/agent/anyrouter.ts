@@ -76,11 +76,12 @@ export async function saveAnyRouterKey(key: string): Promise<string | null> {
   return null;
 }
 
+// The catalog files vision models under "multimodal", so filter on the ability to call tools and nothing else.
 /** Models this key can call as tools, newest first, as app model ids. Cached for an hour. */
 export async function anyRouterModels(): Promise<string[]> {
   if (!anyRouterKey()) return [];
   if (g.__dotsAnyModels && Date.now() - g.__dotsAnyModels.at < 3_600_000) return g.__dotsAnyModels.ids;
-  const res = await fetch(`${BASE_URL}/models?category=text&capability=function-calling`, { headers: { Authorization: `Bearer ${anyRouterKey()}` } });
+  const res = await fetch(`${BASE_URL}/models?capability=function-calling`, { headers: { Authorization: `Bearer ${anyRouterKey()}` } });
   if (!res.ok) throw new Error(`AnyRouter models: ${res.status}`);
   const { data } = (await res.json()) as { data: { id: string; created?: number }[] };
   const ids = data
