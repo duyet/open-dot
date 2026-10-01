@@ -300,17 +300,20 @@ async function respond(dot: Dot, prevId: string | null, input: ResponseInputItem
     // The provider's own search tool, where it has one: the model decides when to search, same as OpenAI's web_search.
     ...(webSearch ? [{ type: webSearch } as unknown as Tool] : []),
   ];
-  if (computer && COMPUTER_ENABLED && supportsComputerTool(model)) tools.push({ type: "computer" } as Tool);
+  // The prompt advertises exactly the built-in tools this request carries, so a dot on a gateway model
+  // isn't told to click a screen it can't see.
+  const caps = { webSearch: Boolean(webSearch), computer: computer && COMPUTER_ENABLED && supportsComputerTool(model) };
+  if (caps.computer) tools.push({ type: "computer" } as Tool);
 
   // Stateless providers get the whole conversation every time; the app keeps it (trimmed) per chat.
   const history = stateless ? (repo.getHistory(dot.id) as ResponseInputItem[]) : [];
   repo.setActivity(dot.id, "Thinking");
   const stream = await client.responses.create(
     stateless
-      ? { model, instructions: systemPrompt(dot, trigger, { webSearch: Boolean(webSearch) }), input: [...history, ...input], tools, parallel_tool_calls: false, store: false, stream: true }
+      ? { model, instructions: systemPrompt(dot, trigger, caps), input: [...history, ...input], tools, parallel_tool_calls: false, store: false, stream: true }
       : {
           model,
-          instructions: systemPrompt(dot, trigger, { webSearch: Boolean(webSearch) }),
+          instructions: systemPrompt(dot, trigger, caps),
           input,
           previous_response_id: prevId ?? undefined,
           tools,
@@ -544,7 +547,8 @@ setConsult(async (target, message, from, _depth, signal) => {
     const res = await client.responses.create(
       {
         model,
-        instructions: systemPrompt(target, { kind: "dot", from: from.name }, { webSearch: Boolean(webSearch) }),
+        // A consult carries the search tool only, so it must not promise a computer either.
+        instructions: systemPrompt(target, { kind: "dot", from: from.name }, { webSearch: Boolean(webSearch), computer: false }),
         input: [...rebuildContext(target.id, message).slice(-12), { role: "user", content: `${from.name} asks: ${message}` }],
         tools: webSearch ? [{ type: webSearch } as unknown as Tool] : [],
         ...(stateless ? { store: false } : isReasoningModel(model) ? { reasoning: { effort: "low" as const } } : {}),

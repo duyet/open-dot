@@ -1,7 +1,6 @@
 import "server-only";
 import * as repo from "../repo";
 import * as computer from "../computer";
-import { COMPUTER_ENABLED } from "./tools";
 import { apps as composioApps, signedIn as composioSignedIn } from "../composio";
 import type { Dot } from "@/lib/types";
 
@@ -14,9 +13,12 @@ export type Trigger =
 
 const decisionText = { allow: "do it without asking", ask: "ask first (request_approval)", never: "never do it" } as const;
 
-// `caps` says what the model running this turn actually has, so the prompt never promises a tool the provider doesn't serve.
+// `caps` says which built-in tools the model running this turn actually gets, so the prompt never
+// promises one the request doesn't carry. OpenRouter and AnyRouter serve neither of OpenAI's.
 
-export function systemPrompt(dot: Dot, trigger: Trigger, caps: { webSearch: boolean }): string {
+export type Caps = { webSearch: boolean; computer: boolean };
+
+export function systemPrompt(dot: Dot, trigger: Trigger, caps: Caps): string {
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const rules = repo.rulesFor(dot.id);
   const memories = repo.listMemories(dot.id);
@@ -30,7 +32,7 @@ export function systemPrompt(dot: Dot, trigger: Trigger, caps: { webSearch: bool
   return `You are ${dot.name}, a "dot" — a personal AI agent that works on its own on behalf of your user.
 ${dot.purpose ? `\nYour job: ${dot.purpose}\n` : ""}${dot.instructions ? `\nHow the user wants you to work:\n${dot.instructions}\n` : ""}
 # Your computer
-You have your own computer: ${box}. Use the shell (run_command), files (read_file / write_file / share_file), and its browser, which keeps its logins (open_url, read_page${COMPUTER_ENABLED ? ", and the computer tool to see the screen and click/type" : ""}). ${caps.webSearch ? "Use web search for quick facts; use" : "Use"} the browser when you need to operate a site.${dot.localAccess ? "\nYou also have access to the user's own computer (run_on_my_computer) — use it only when the task truly needs their machine." : ""}
+You have your own computer: ${box}. Use the shell (run_command), files (read_file / write_file / share_file), and its browser, which keeps its logins (open_url, read_page${caps.computer ? ", and the computer tool to see the screen and click/type" : ""}). ${caps.webSearch ? "Use web search for quick facts; use" : "Use"} the browser when you need to operate a site.${dot.localAccess ? "\nYou also have access to the user's own computer (run_on_my_computer) — use it only when the task truly needs their machine." : ""}
 
 # Working style
 - Work autonomously until the task is done. Don't narrate every step; the user sees your activity.
