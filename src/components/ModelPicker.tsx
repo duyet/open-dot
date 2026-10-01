@@ -25,7 +25,7 @@ function hint(id: string): string | null {
 /** The heading above a model, so each provider's block is labelled once and the list reads in order. */
 function groupOf(id: string, list: string[], i: number): string | undefined {
   const mine = gatewayOf(id)?.group;
-  if (mine) return gatewayOf(list[i - 1] ?? "")?.group === mine ? undefined : mine;
+  if (mine) return list.slice(0, i).some((m) => gatewayOf(m)?.group === mine) ? undefined : mine;
   return i === 0 && list.some((m) => gatewayOf(m)) ? "OpenAI" : undefined;
 }
 
