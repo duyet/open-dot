@@ -294,23 +294,23 @@ async function drive(dot: Dot, prevId: string | null, input: ResponseInputItem[]
 /** Stream one model response, mirroring text into the transcript as it arrives. */
 async function respond(dot: Dot, prevId: string | null, input: ResponseInputItem[], trigger: Trigger, signal: AbortSignal): Promise<Response> {
   const appModel = await modelFor(dot.model);
-  const { client, model, stateless } = clientFor(appModel);
+  const { client, model, stateless, webSearch, computer } = clientFor(appModel);
   const tools: Tool[] = [
     ...toolsForDot(dot).map((t): Tool => ({ type: "function", name: t.name, description: t.description, parameters: t.parameters, strict: !stateless && t.strict !== false })),
-    // OpenRouter's server-side search: the model decides when to search, same as OpenAI's web_search.
-    stateless ? ({ type: "openrouter:web_search" } as unknown as Tool) : { type: "web_search" },
+    // The provider's own search tool, where it has one: the model decides when to search, same as OpenAI's web_search.
+    ...(webSearch ? [{ type: webSearch } as unknown as Tool] : []),
   ];
-  if (!stateless && COMPUTER_ENABLED && supportsComputerTool(model)) tools.push({ type: "computer" } as Tool);
+  if (computer && COMPUTER_ENABLED && supportsComputerTool(model)) tools.push({ type: "computer" } as Tool);
 
   // Stateless providers get the whole conversation every time; the app keeps it (trimmed) per chat.
   const history = stateless ? (repo.getHistory(dot.id) as ResponseInputItem[]) : [];
   repo.setActivity(dot.id, "Thinking");
   const stream = await client.responses.create(
     stateless
-      ? { model, instructions: systemPrompt(dot, trigger), input: [...history, ...input], tools, parallel_tool_calls: false, store: false, stream: true }
+      ? { model, instructions: systemPrompt(dot, trigger, { webSearch: Boolean(webSearch) }), input: [...history, ...input], tools, parallel_tool_calls: false, store: false, stream: true }
       : {
           model,
-          instructions: systemPrompt(dot, trigger),
+          instructions: systemPrompt(dot, trigger, { webSearch: Boolean(webSearch) }),
           input,
           previous_response_id: prevId ?? undefined,
           tools,
@@ -540,13 +540,13 @@ setConsult(async (target, message, from, _depth, signal) => {
   if (!channelId) repo.addMessage({ dotId: target.id, role: "user", text: message, from: `dot:${from.name}` });
   repo.setActivity(target.id, `Helping ${from.name}`);
   try {
-    const { client, model, stateless } = clientFor(await modelFor(target.model));
+    const { client, model, stateless, webSearch } = clientFor(await modelFor(target.model));
     const res = await client.responses.create(
       {
         model,
-        instructions: systemPrompt(target, { kind: "dot", from: from.name }),
+        instructions: systemPrompt(target, { kind: "dot", from: from.name }, { webSearch: Boolean(webSearch) }),
         input: [...rebuildContext(target.id, message).slice(-12), { role: "user", content: `${from.name} asks: ${message}` }],
-        tools: [stateless ? ({ type: "openrouter:web_search" } as unknown as Tool) : { type: "web_search" }],
+        tools: webSearch ? [{ type: webSearch } as unknown as Tool] : [],
         ...(stateless ? { store: false } : isReasoningModel(model) ? { reasoning: { effort: "low" as const } } : {}),
       },
       { signal },

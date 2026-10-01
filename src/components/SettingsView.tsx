@@ -3,7 +3,7 @@
 import { useState, useSyncExternalStore, useTransition } from "react";
 import { useSearchParams } from "next/navigation";
 import { Bell, KeyRound, Lock, LogOut, Plus, RefreshCw } from "lucide-react";
-import { connectApp, deletePassword, refreshApps, savePassword, setCloudKey, setDefaultModel, setOpenAIKey, setOpenRouterKey, signInComposio, signOutComposio } from "@/app/actions";
+import { connectApp, deletePassword, refreshApps, savePassword, setAnyRouterKey, setCloudKey, setDefaultModel, setOpenAIKey, setOpenRouterKey, signInComposio, signOutComposio } from "@/app/actions";
 import { useStore } from "@/lib/store";
 import { openAfter } from "@/lib/popup";
 import { Empty, PageHeader, RemoveButton, RuleEditor, Section } from "./SettingsKit";
@@ -121,9 +121,10 @@ export default function SettingsView() {
           </div>
         </Section>
 
-        <Section eyebrow="Engine" title="Models & computers" description="Models come from what your OpenAI key can use, plus open models once you add an OpenRouter key.">
+        <Section eyebrow="Engine" title="Models & computers" description="Models come from what your OpenAI key can use, plus open models once you add an OpenRouter key and models from every provider once you add an AnyRouter key.">
           <ApiKey />
           <OpenModelsKey />
+          <AnyRouterKey />
           <CloudKey />
           <div className="surface mb-3 flex items-center gap-3 p-4">
             <div className="flex-1">
@@ -413,6 +414,70 @@ function OpenModelsKey() {
           }}
         >
           <input className="field font-mono text-[13px]" type="password" placeholder="sk-or-..." value={key} onChange={(e) => setKey(e.target.value)} autoComplete="off" />
+          <button className="btn-primary shrink-0" disabled={pending || !key.trim()}>
+            {pending ? "Checking…" : "Save"}
+          </button>
+        </form>
+      )}
+      {error && <p className="mt-2 text-caption text-destructive">{error}</p>}
+    </div>
+  );
+}
+
+/** Optional AnyRouter key: adds models from every provider it serves (GLM, Kimi, DeepSeek, Grok…) to every model picker. */
+function AnyRouterKey() {
+  const computer = useStore((s) => s.computer);
+  const anyCount = computer.models.filter((m) => m.startsWith("anyrouter:")).length;
+  const [editing, setEditing] = useState(false);
+  const [key, setKey] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [pending, start] = useTransition();
+  const saved = computer.anyRouter !== null;
+  const save = (value: string) =>
+    start(async () => {
+      const err = await setAnyRouterKey(value);
+      setError(err);
+      if (!err) {
+        setKey("");
+        setEditing(false);
+      }
+    });
+
+  return (
+    <div id="any-router" className="surface mb-3 scroll-mt-6 p-4">
+      <div className="flex items-center gap-3">
+        <div className="flex-1">
+          <div className="text-[14px]">
+            AnyRouter <span className="text-foreground/40">· optional</span>
+          </div>
+          <div className="text-body-sm text-foreground/55">
+            {computer.anyRouter === "env"
+              ? `Connected from ANYROUTER_API_KEY${anyCount ? ` · ${anyCount} AnyRouter models in the model picker` : ""}.`
+              : saved
+                ? `Connected${anyCount ? ` · ${anyCount} AnyRouter models in the model picker` : ""}. No built-in web search or computer tool; voice calls still use OpenAI.`
+                : "Paste an AnyRouter key (from anyrouter.dev) to reach 150+ models from one key, with failover between providers."}
+          </div>
+        </div>
+        {computer.anyRouter === "settings" && !editing && (
+          <>
+            <button className="btn-quiet h-8 px-3 text-[13px]" disabled={pending} onClick={() => save("")}>
+              Remove
+            </button>
+            <button className="btn-secondary h-8 px-3 text-[13px]" onClick={() => setEditing(true)}>
+              Change
+            </button>
+          </>
+        )}
+      </div>
+      {(editing || !saved) && computer.anyRouter !== "env" && (
+        <form
+          className="mt-3 flex gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            save(key);
+          }}
+        >
+          <input className="field font-mono text-[13px]" type="password" placeholder="sk-ar-..." value={key} onChange={(e) => setKey(e.target.value)} autoComplete="off" />
           <button className="btn-primary shrink-0" disabled={pending || !key.trim()}>
             {pending ? "Checking…" : "Save"}
           </button>

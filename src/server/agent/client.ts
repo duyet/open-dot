@@ -3,6 +3,7 @@ import OpenAI from "openai";
 import { getSetting, setSetting } from "../db";
 import { seal, unseal } from "../vault";
 import { isOpenRouterModel, openModels, openRouterId, openRouterKey, openrouter, preferredOpenModel, smallOpenModel } from "./openrouter";
+import { anyRouterId, anyRouterKey, anyRouterModels, anyrouter, isAnyRouterModel, preferredAnyModel, smallAnyModel } from "./anyrouter";
 
 // Models are chosen from what the API key can actually use. Precedence for a dot's model:
 // the dot's own choice → the default picked in Settings → DOTS_MODEL → best available.
@@ -94,19 +95,23 @@ async function resolveOpenAI(): Promise<{ main: string; review: string; availabl
   };
 }
 
-/** OpenAI models (with an OpenAI key) first, then open models (with an OpenRouter key). */
+/** OpenAI models (with an OpenAI key) first, then open models (with an OpenRouter key), then AnyRouter's catalog. */
 async function resolve() {
-  const [oa, open] = await Promise.all([
+  const [oa, open, any] = await Promise.all([
     resolveOpenAI(),
     openModels().catch((err) => {
       console.warn("[dots] couldn't list OpenRouter models:", err instanceof Error ? err.message : err);
       return [] as string[];
     }),
+    anyRouterModels().catch((err) => {
+      console.warn("[dots] couldn't list AnyRouter models:", err instanceof Error ? err.message : err);
+      return [] as string[];
+    }),
   ]);
   const resolved = {
-    main: oa?.main ?? (open.length ? preferredOpenModel(open) : process.env.DOTS_MODEL || MAIN_PREFERENCE[0]),
-    review: oa?.review ?? (open.length ? smallOpenModel(open) : process.env.DOTS_REVIEW_MODEL || REVIEW_PREFERENCE[0]),
-    available: [...(oa?.available ?? []), ...open],
+    main: oa?.main ?? (open.length ? preferredOpenModel(open) : any.length ? preferredAnyModel(any) : process.env.DOTS_MODEL || MAIN_PREFERENCE[0]),
+    review: oa?.review ?? (open.length ? smallOpenModel(open) : any.length ? smallAnyModel(any) : process.env.DOTS_REVIEW_MODEL || REVIEW_PREFERENCE[0]),
+    available: [...(oa?.available ?? []), ...open, ...any],
   };
   g.__dotsResolved = resolved;
   console.log(`[dots] default ${resolved.main} (agent), ${resolved.review} (rule review); ${resolved.available.length} models available`);
@@ -119,14 +124,25 @@ export function resetModels() {
   g.__dotsResolved = undefined;
 }
 
-/** The API client for a model, the model id that API expects, and whether it keeps conversation state. */
-export function clientFor(model: string): { client: OpenAI; model: string; stateless: boolean } {
-  return isOpenRouterModel(model) ? { client: openrouter(), model: openRouterId(model), stateless: true } : { client: openai(), model, stateless: false };
+/** How one provider's API differs from OpenAI's: which built-in tools it serves and whether it keeps conversation state. */
+export type Provider = {
+  client: OpenAI; // the SDK pointed at that provider's base URL
+  model: string; // the id that API expects (any app prefix stripped)
+  stateless: boolean; // no conversation state, so the app replays each chat's history itself
+  webSearch: string | null; // its built-in search tool, or null when it has none
+  computer: boolean; // it serves OpenAI's computer tool
+};
+
+/** The API client for a model and everything the runtime needs to know about how that provider differs. */
+export function clientFor(model: string): Provider {
+  if (isOpenRouterModel(model)) return { client: openrouter(), model: openRouterId(model), stateless: true, webSearch: "openrouter:web_search", computer: false };
+  if (isAnyRouterModel(model)) return { client: anyrouter(), model: anyRouterId(model), stateless: false, webSearch: null, computer: false };
+  return { client: openai(), model, stateless: false, webSearch: "web_search", computer: true };
 }
 
-/** True when any model provider is set up (OpenAI or OpenRouter). */
+/** True when any model provider is set up (OpenAI, OpenRouter or AnyRouter). */
 export function canThink(): boolean {
-  return hasKey() || Boolean(openRouterKey());
+  return hasKey() || Boolean(openRouterKey()) || Boolean(anyRouterKey());
 }
 
 export function models(): Promise<{ main: string; review: string; available: string[] }> {
