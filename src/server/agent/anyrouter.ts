@@ -23,10 +23,12 @@ const HEADERS = {
 // Routers that only work inside a workspace the user hasn't set up here.
 const SKIP = [/^anyrouter\/decision$/];
 // Best first when a model has to be picked for the user (no OpenAI key yet, or no choice made).
-// Anchored at the end so a "-flash" variant can't win the main slot over the full model.
-const MAIN_PREFERENCE = [/^anyrouter\/auto/, /^z-ai\/glm-5(\.\d+)?$/, /^moonshotai\/kimi-k\d/, /^nvidia\/nemotron-3-ultra/, /^deepseek\/deepseek-v\d(\.\d+)?$/];
-// The cheap tier, for the rule checker and chat titles. Anchored so the newest, priciest model can't win.
-const SMALL_PREFERENCE = [/^z-ai\/glm-.*-flash$/, /^nvidia\/nemotron-3\.5-lightning/, /^deepseek\/.*-flash/, /^google\/gemma-4/, /^anyrouter\/free$/];
+// AnyRouter's own routers lead because they resolve to whatever this particular key can actually
+// reach: a named vendor model is regularly BYOK-only or has no upstream at all, and a default that
+// 502s takes the whole turn down with it. Everything below is one that answered a live request.
+const MAIN_PREFERENCE = [/^anyrouter\/auto$/, /^moonshotai\/kimi-k\d/, /^nvidia\/nemotron-3-ultra/, /^anyrouter\/latest$/];
+// The rule checker and chat titles are short calls, so they take the same reliable route first.
+const SMALL_PREFERENCE = [/^anyrouter\/auto$/, /^anyrouter\/free$/, /^nvidia\/nemotron-3\.5-lightning/, /^anyrouter\/coding$/];
 
 const g = globalThis as unknown as {
   __dotsAnyRouter?: { key: string; client: OpenAI };
