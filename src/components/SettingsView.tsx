@@ -260,18 +260,22 @@ function ApiKey() {
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
   const open = editing || !computer.hasKey;
+  // Another provider can think on its own, so an OpenAI key is only needed when nothing else is set up.
+  const thinking = computer.hasKey || computer.openRouter !== null || computer.anyRouter !== null;
 
   return (
     <div id="api-key" className="surface mb-3 p-4">
       <div className="flex items-center gap-3">
         <div className="flex-1">
           <div className="text-[14px]">OpenAI API key</div>
-          <div className={`text-body-sm ${computer.hasKey ? "text-foreground/55" : "text-warning"}`}>
+          <div className={`text-body-sm ${thinking ? "text-foreground/55" : "text-warning"}`}>
             {computer.keySource === "env"
               ? "Connected from OPENAI_API_KEY."
               : computer.hasKey
                 ? "Connected. Stored encrypted on this computer."
-                : "Your dots need one to think. Create one at platform.openai.com."}
+                : thinking
+                  ? "Optional. Adds OpenAI's own models, voice calls and the computer tool."
+                  : "Your dots need one to think. Create one at platform.openai.com."}
           </div>
         </div>
         {computer.hasKey && computer.keySource !== "env" && !editing && (
