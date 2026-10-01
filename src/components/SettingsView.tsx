@@ -459,7 +459,7 @@ function AnyRouterKey() {
               ? `Connected from ANYROUTER_API_KEY${anyCount ? ` · ${anyCount} AnyRouter models in the model picker` : ""}.`
               : saved
                 ? `Connected${anyCount ? ` · ${anyCount} AnyRouter models in the model picker` : ""}. No built-in web search or computer tool; voice calls still use OpenAI.`
-                : "Paste an AnyRouter key (from anyrouter.dev) to reach models from every major provider behind one key, with failover between them."}
+                : "Paste an AnyRouter key (from anyrouter.dev) to reach models from every provider behind one key, with failover between them."}
           </div>
         </div>
         {computer.anyRouter === "settings" && !editing && (
